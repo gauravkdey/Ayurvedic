@@ -1,4 +1,5 @@
 # AyurGraph (Streamlit + Neo4j + Claude)
+(https://ayurvedic-kmrrpe8ex7iphhrz4rmutt.streamlit.app)
 
 1. `pip install -r requirements.txt`
 2. Copy `.env.example` to `.env` and fill in your AuraDB credentials (and `ANTHROPIC_API_KEY` for Agent 2; leave blank for template mode).
