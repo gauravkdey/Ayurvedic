@@ -1,0 +1,5 @@
+streamlit>=1.40
+neo4j>=5.20
+pandas
+anthropic
+python-dotenv
