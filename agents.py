@@ -36,19 +36,59 @@ RULES = ("You assist an Ayurvedic physician. Use ONLY the numbered facts. Cite f
          '{"formulation":null,"rationale":"insufficient information","cited":[]}. '
          'Reply with JSON only: {"formulation":str,"rationale":str,"cited":[int]}')
 
+def _provider():
+    """gemini (free tier) if GEMINI_API_KEY is set, else anthropic if ANTHROPIC_API_KEY is set, else None."""
+    want = (os.getenv("LLM_PROVIDER") or "").lower()
+    if want == "gemini" and os.getenv("GEMINI_API_KEY"): return "gemini"
+    if want == "anthropic" and os.getenv("ANTHROPIC_API_KEY"): return "anthropic"
+    if os.getenv("GEMINI_API_KEY"): return "gemini"
+    if os.getenv("ANTHROPIC_API_KEY"): return "anthropic"
+    return None
+
+def _gemini(model, user):
+    import requests
+    cfg = {"maxOutputTokens": 2000, "responseMimeType": "application/json"}
+    if not model.startswith("gemini-3"):      # Gemini 3 works best at its default temperature
+        cfg["temperature"] = 0
+    r = requests.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"], "Content-Type": "application/json"},
+        json={"systemInstruction": {"parts": [{"text": RULES}]},
+              "contents": [{"role": "user", "parts": [{"text": user}]}], "generationConfig": cfg},
+        timeout=15)
+    r.raise_for_status()
+    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+def gemini_models():
+    first = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+    return [first] + [m for m in ("gemini-flash-latest", "gemini-3.5-flash", "gemini-3.5-flash-lite") if m != first]
+
+def _call_llm(provider, user):
+    if provider == "gemini":
+        last = None
+        for m in gemini_models():            # overloaded (503), busy (429) or retired (404)? try the next model
+            try:
+                return _gemini(m, user)
+            except Exception as e:
+                if any(c in str(e) for c in ("400", "401", "403")): raise   # key problem: another model will not help
+                last = e
+        raise last
+    import anthropic
+    msg = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"]).messages.create(
+        model=os.getenv("LLM_MODEL", "claude-sonnet-5-5"), max_tokens=500, temperature=0,
+        system=RULES, messages=[{"role": "user", "content": user}])
+    return msg.content[0].text
+
 def agent2(query, cands):
     top = cands[0]; facts = facts_for(top)
     fallback = {"formulation": top["medicine"], "rationale": template(top), "cited": [3], "flag": None}
-    key = os.getenv("ANTHROPIC_API_KEY")
-    if not key: return {**fallback, "flag": "template mode (no API key)", "facts": facts}
+    provider = _provider()
+    if not provider: return {**fallback, "flag": "template mode (no API key)", "facts": facts}
     try:
-        import anthropic
         ctx = "\n".join(f"[{i+1}] {f}" for i, f in enumerate(facts))
-        msg = anthropic.Anthropic(api_key=key).messages.create(
-            model=os.getenv("LLM_MODEL", "claude-sonnet-5-5"), max_tokens=500, temperature=0,
-            system=RULES, messages=[{"role": "user", "content": f"Symptoms: {query}\nFacts:\n{ctx}"}])
-        R = json.loads(re.search(r"\{.*\}", msg.content[0].text, re.S).group(0))
-        # grounding check: formulation must be a candidate, citations must exist,
+        text = _call_llm(provider, f"Symptoms: {query}\nFacts:\n{ctx}")
+        R = json.loads(re.search(r"\{.*\}", text, re.S).group(0))
+        # grounding check: formulation must be the retrieved one, citations must exist,
         # and no other known formulation may be named
         names = {c["medicine"] for c in cands}
         others = [n for n in names - {top["medicine"]} if n.lower() in R["rationale"].lower()]
