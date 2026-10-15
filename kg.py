@@ -95,3 +95,26 @@ def bootstrap_admin():
     if u and p and len(p) >= 8:
         create_user(u, "Administrator", "admin", p); return True
     return False
+
+# ---- Read helpers for the Knowledge Explorer, registry and dashboards
+def search_diseases(q=""):
+    q = (q or "").strip().lower()
+    return [r["n"] for r in run("""
+        MATCH (d:Disease) OPTIONAL MATCH (d)-[:TREATED_BY]->(f:Formulation) OPTIONAL MATCH (f)-[:CONTAINS]->(h:Herb)
+        WITH d, collect(DISTINCT toLower(f.name)) + collect(DISTINCT toLower(h.name)) AS keys
+        WHERE $q = '' OR toLower(d.name) CONTAINS $q OR any(k IN keys WHERE k CONTAINS $q)
+        RETURN d.name AS n ORDER BY n""", q=q)]
+
+def disease_detail(name):
+    r = run("""MATCH (d:Disease {name:$n})
+        OPTIONAL MATCH (d)-[:HAS_SYMPTOM]->(s:Lakshana) WITH d, collect(DISTINCT s.name) AS symptoms
+        OPTIONAL MATCH (d)-[:CAUSED_BY]->(o:Dosha) WITH d, symptoms, collect(DISTINCT o.name) AS doshas
+        OPTIONAL MATCH (d)-[:TREATED_BY]->(f:Formulation) OPTIONAL MATCH (f)-[:CONTAINS]->(h:Herb)
+        RETURN symptoms, doshas, f.name AS formulation, f.dose AS dose, f.source AS source,
+               f.verified AS verified, collect(DISTINCT h.name) AS herbs""", n=name)
+    return r[0] if r else None
+
+def registry():
+    return run("""MATCH (f:Formulation)-[:HAS_STATUS]->(b:BanRecord)
+                  RETURN f.name AS formulation, b.status AS status, b.notice_ref AS reference, b.date AS date
+                  ORDER BY b.date DESC""")
